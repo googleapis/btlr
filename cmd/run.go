@@ -15,14 +15,14 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -33,14 +33,24 @@ func init() {
 }
 
 var runCmd = &cobra.Command{
-	Use:   "run PATTERN -- SUBCOMMAND",
+	Use:   "run \"PATTERN\" -- COMMAND",
 	Short: "Run a command into directories containing files that match the specified pattern.",
-	Long: `Run a command into directories containing files that match the specified pattern.`,
-	Args: cobra.MinimumNArgs(2),
-	RunE: runRun,
+	Long: strings.TrimSpace(`
+Runs a specific command in parallel, targeting multiple directories concurrently.
+
+btlr run \"PATTERN\" -- COMMAND
+
+"PATTERN" is a glob-style pattern that is matched against files against that 
+supports bash-style expansion (including globstar "**"). Any folders containing
+a file that matches the specified pattern will have the command executed with a
+working directory of that folder. Output from each command and a summary of all
+commands run will be printed once execution completes`),
+	Args:  cobra.MinimumNArgs(2),
+	RunE:  runRun,
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
+	ctx := contextWithSignalCancel(context.Background())
 	pattern := args[0]
 	execCmd, execArgs := args[1], args[2:]
 
@@ -53,7 +63,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return exitWithCode(MisuseExitCode, fmt.Errorf("No paths match pattern: '%s'", pattern))
 	}
 
-	// From the matching files, narrow down to list of unique directories
+	// From the matching files, reduce to unique directories
 	dirs, hist := []string{}, map[string]bool{}
 	for _, m := range matches {
 		d := filepath.Dir(m)
@@ -63,135 +73,115 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create a context for propagating Interrupt/Terminate signals
-	ctx, cancel := context.WithCancel(context.Background())
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		_ = <-sigs
-		cancel()
-	}()
-
 	// Run the command in each directory
 	statusFmt := "Running command... [%d of %d complete]."
-	fmt.Printf(statusFmt, 0, len(dirs))
-	var runs []*runStatus
-	for _, d := range dirs {
-		r := startRun(ctx, d, execCmd, execArgs...)
-		runs = append(runs, r)
-	}
+	cmd.Printf(statusFmt, 0, len(dirs))
+	results := runInDirs(ctx, dirs, execCmd, execArgs...)
 
-	// Update user with current status periodically
-	t := time.Tick(250 * time.Millisecond)
-	for {
-		// Count completed runs
-		ct := 0
-		for _, r := range runs {
+	// Wait for runs to complete, updating the user periodically
+	for ct, t := 0, time.Tick(100*time.Millisecond); ct < len(results); {
+		select {
+		case <-ctx.Done():
+			return exitWithCode(InterruptExitCode, fmt.Errorf("execution interrupted"))
+		case <-t: // pass
+		}
+		ct = 0
+		for _, r := range results {
 			if r.Done() {
 				ct++
 			}
 		}
-		fmt.Printf("\r"+statusFmt, ct, len(dirs))
-		select {
-		case <-ctx.Done():
-			fmt.Println("\n\nExecution interrupted!")
-			os.Exit(InterruptExitCode)
-		case <-t:
-			if ct < len(runs) {
-				continue
-			}
+		cmd.Printf("\r"+statusFmt, ct, len(dirs)) // overwrite current status
+	}
+	cmd.Println()
+
+	// Report the output of each run
+	for _, r := range results {
+		cmd.Printf("\n"+"#\n"+"# %s\n"+"#\n"+"\n", r.Dir)
+
+		cmd.Println(r.Stdall.String())
+		if r.Err != nil {
+			cmd.Printf("\nerr: %v\n", r.Err)
 		}
-		break
-	}
-	fmt.Println()
-
-	// Report the output of each command
-	for _, r := range runs {
-		fmt.Printf("\n"+"#\n"+"# %s\n"+"#\n"+"\n", r.Dir)
-		fmt.Println(r.Output())
-		fmt.Println()
+		cmd.Println()
 	}
 
-	// Report summary of results
+	// Report a summary of runs
 	success := true
-	fmt.Printf("\n" + "#\n" + "# Summary \n" + "#\n" + "\n")
+	cmd.Printf("\n" + "#\n" + "# Summary \n" + "#\n" + "\n")
 	// For each test, print 80 char wide line in fmt: "path/to/dir....[ STATUS]"
-	for _, r := range runs {
-		// Truncate the dir if it's too wide
+	for _, r := range results {
 		d := r.Dir
-		if len(d) > 67 {
+		if len(d) > 67 { // Truncate the dir if it's too wide
 			d = d[:67]
 		}
-		fmt.Print(d)
-		fmt.Print(strings.Repeat(".", 70-len(d)))
-		if r.Success() {
-			fmt.Println("[PASSED]")
+		cmd.Print(d)
+		cmd.Print(strings.Repeat(".", 70-len(d)))
+		if r.Success {
+			cmd.Println("[PASSED]")
 		} else {
-			fmt.Println("[FAILED]")
+			cmd.Println("[FAILED]")
 			success = false
 		}
 	}
 
 	if !success {
-		os.Exit(10)
+		return exitWithCode(10, fmt.Errorf("subcommand failed"))
 	}
 	// Completed successfully!
 	return nil
 }
 
-// startRun starts running a command in a specific directory.
-func startRun(ctx context.Context, dir string, name string, arg ...string) *runStatus {
-	cmd := exec.CommandContext(ctx, name, arg...)
-	cmd.Dir = dir
-	done := make(chan bool)
-	dc := &runStatus{Dir: dir, cmd: cmd, done: done,}
-	go func() {
-		dc.output, dc.err = cmd.CombinedOutput()
-		close(done)
-	}()
-	return dc
+// runInDirs starts the provided command running in multiple directories.
+func runInDirs(ctx context.Context, dirs []string, name string, args ...string) []runResult {
+	base := exec.CommandContext(ctx, name, args...)
+	results, q := make([]runResult, len(dirs)), make(chan *runResult, len(dirs))
+	defer close(q)
+	for i, d := range dirs { // Queue up directories to run
+		results[i].Dir = d
+		results[i].done = make(chan bool)
+		q <- &results[i]
+	}
+	for range results {
+		go func() {
+			for r := range q {
+				cmd := *base
+				cmd.Dir = r.Dir
+				cmd.Stdout, cmd.Stderr = io.MultiWriter(&r.Stdout, &r.Stdall), io.MultiWriter(&r.Stderr, &r.Stdall)
+				r.Err = cmd.Run()
+				if r.Err == nil {
+					r.Success = cmd.ProcessState.Success()
+				}
+				close(r.done)
+			}
+		}()
+	}
+	return results
 }
 
-// runStatus represents a running command in a specific directory.
-type runStatus struct {
-	Dir    string
-	cmd    *exec.Cmd
-	done   <-chan bool // closed once the cmd is completed
-	output []byte      // output returned by cmd
-	err    error       // err return by cmd
+// runResult represents a running command in a specific directory.
+type runResult struct {
+	Dir     string
+	Stdout  bytes.Buffer
+	Stderr  bytes.Buffer
+	Stdall  bytes.Buffer
+	Success bool
+	Err     error     // err return by cmd
+	done    chan bool // closed once the cmd is completed
 }
 
 // Done returns if the command is no longer running.
-func (rs *runStatus) Done() bool {
+func (r *runResult) Done() bool {
 	select {
-	case <-rs.done:
+	case <-r.done:
 		return true
 	default:
 	}
 	return false
 }
 
-// Success reports whether the command exited successfully, such as with exit status 0 on Unix. Blocks until command is no longer running.
-func (rs *runStatus) Success() bool {
-	select {
-	case <-rs.done:
-	}
-	return rs.cmd.ProcessState.Success()
-}
-
-// Output reports the combined output of the command. Blocks until command is no longer running.
-func (rs *runStatus) Output() string {
-	select {
-	case <-rs.done:
-	}
-	if rs.err != nil {
-		return fmt.Sprintf("Execution failed: %v", rs.err)
-	}
-	return string(rs.output)
-}
-
 // rGlob returns a slice of filepaths matching a pattern just like `filepath.Glob`, with additional support for globstars (**).
-func rGlob(pattern string) ([]string, error) {
+func rGlob(pattern string) (matches []string, err error) {
 	parts := strings.Split(pattern, string(os.PathSeparator))
 	// Find the index of the first globstar pattern (if any)
 	g := -1
@@ -205,12 +195,15 @@ func rGlob(pattern string) ([]string, error) {
 		return filepath.Glob(pattern)
 	}
 	pre, post := filepath.Clean(filepath.Join(parts[:g]...)), filepath.Join(parts[g+1:]...)
+	if filepath.IsAbs(pattern) && !filepath.IsAbs(pre) {
+		pre = filepath.Join(string(os.PathSeparator), pre)
+	}
 	if g == len(parts)-1 { // If the globstar is at the end, match all files
 		post = "*"
 	}
 	// Traverse the directory lexicographically, and collect all matching files
-	matches, hist := []string{}, map[string]bool{}
-	err := filepath.Walk(pre, func(path string, info os.FileInfo, err error) error {
+	hist := map[string]bool{}
+	err = filepath.Walk(pre, func(path string, info os.FileInfo, err error) error {
 		if err != nil { // filepath.Glob ignores access errors, so we will too
 			return nil
 		}
