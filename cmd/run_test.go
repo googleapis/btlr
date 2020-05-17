@@ -16,6 +16,7 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestRun(t *testing.T) {
 	// Create temp directory with content
 	dir, err := ioutil.TempDir("", "")
 	if err != nil {
-		t.Fatalf("Failed setting up tempdir: %v", err)
+		t.Fatalf("Failure setting up tempdir: %v", err)
 	}
 	defer os.RemoveAll(dir)
 	files := []string{
@@ -40,10 +41,10 @@ func TestRun(t *testing.T) {
 	}
 	for _, f := range files {
 		if err := os.MkdirAll(filepath.Dir(f), os.ModePerm); err != nil {
-			t.Fatalf("Failed to set up test file dir: %v", err)
+			t.Fatalf("Failure to set up test file dir: %v", err)
 		}
 		if err := ioutil.WriteFile(f, []byte("hello"), os.ModePerm); err != nil {
-			t.Fatalf("Failed to set up test file: %v", err)
+			t.Fatalf("Failure to set up test file: %v", err)
 		}
 	}
 
@@ -56,8 +57,74 @@ func TestRun(t *testing.T) {
 	}
 
 	output, err := ExecCmd(rootCmd, "run", filepath.Join(dir, "**", "*.txt"), rmCmd, "foo.txt")
-	if !strings.Contains(output, "[FAILED]") || !strings.Contains(output, "[PASSED]") {
-		t.Errorf("Command output did not contain a FAILED and PASSED case.")
+	outcomes := []struct {
+		contains string
+		want bool
+	}{
+		{"[ FAILURE]", true},
+		{"[ SUCCESS]", true},
+	}
+	for _, o := range outcomes {
+		if strings.Contains(output, o.contains) != o.want {
+			if o.want {
+				t.Errorf("want: contains %q, got: \n %s", o.contains, output)
+			} else {
+				t.Errorf("want: doesn't contain %q, got: \n %s", o.contains, output)
+			}
+
+		}
+	}
+}
+
+func TestPreCmdFilter(t *testing.T) {
+	// Create temp directory with content
+	dir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Fatalf("Failure setting up tempdir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	files := []string{
+		filepath.Join(dir, "foo", "foo.txt"),
+		filepath.Join(dir, "foo", "bar.txt"),
+		filepath.Join(dir, "bar", "bar.txt"),
+	}
+	for _, f := range files {
+		if err := os.MkdirAll(filepath.Dir(f), os.ModePerm); err != nil {
+			t.Fatalf("Failure to set up test file dir: %v", err)
+		}
+		if err := ioutil.WriteFile(f, []byte("hello"), os.ModePerm); err != nil {
+			t.Fatalf("Failure to set up test file: %v", err)
+		}
+	}
+
+	var rmCmd, preCmd string
+	switch o := runtime.GOOS; o {
+	case "windows":
+		preCmd = fmt.Sprintf("if %s exists", "foo.txt")
+		rmCmd = "del"
+	default: // linux, darwin
+		preCmd = fmt.Sprintf("sh -c %q", "[ -f foo.txt ]")
+		rmCmd = "rm"
+	}
+
+	output, err := ExecCmd(rootCmd, "run", fmt.Sprintf("--pre-filter-cmd=%s", preCmd), filepath.Join(dir, "**", "*.txt"), rmCmd, "foo.txt")
+
+	outcomes := []struct {
+		contains string
+		want bool
+	}{
+		{"[ FAILURE]", false},
+		{"[ SUCCESS]", true},
+	}
+	for _, o := range outcomes {
+		if strings.Contains(output, o.contains) != o.want {
+			if o.want {
+				t.Errorf("want: contains %q, got: \n %s", o.contains, output)
+			} else {
+				t.Errorf("want: doesn't contain %q, got: \n %s", o.contains, output)
+			}
+
+		}
 	}
 }
 
@@ -65,11 +132,11 @@ func TestRGlob(t *testing.T) {
 	// Create temp directory with content
 	dir, err := ioutil.TempDir("", "")
 	if err != nil {
-		t.Fatalf("Failed setting up tempdir: %v", err)
+		t.Fatalf("Failure setting up tempdir: %v", err)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("Failed to get cwd: %v", err)
+		t.Fatalf("Failure to get cwd: %v", err)
 	}
 	defer func() { // clean up
 		_ = os.Chdir(cwd)
@@ -77,7 +144,7 @@ func TestRGlob(t *testing.T) {
 	}()
 	err = os.Chdir(dir)
 	if err != nil {
-		t.Fatalf("Failed to move into tempdir: %v", err)
+		t.Fatalf("Failure to move into tempdir: %v", err)
 	}
 	content := []string{
 		"file.txt",
@@ -89,10 +156,10 @@ func TestRGlob(t *testing.T) {
 	}
 	for _, f := range content {
 		if err := os.MkdirAll(filepath.Dir(f), os.ModePerm); err != nil {
-			t.Fatalf("Failed to set up test file dir: %v", err)
+			t.Fatalf("Failure to set up test file dir: %v", err)
 		}
 		if err := ioutil.WriteFile(f, []byte("hello"), os.ModePerm); err != nil {
-			t.Fatalf("Failed to set up test file: %v", err)
+			t.Fatalf("Failure to set up test file: %v", err)
 		}
 	}
 

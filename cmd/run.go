@@ -25,12 +25,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/shlex"
 	"github.com/spf13/cobra"
 )
-
-func init() {
-	rootCmd.AddCommand(runCmd)
-}
 
 var runCmd = &cobra.Command{
 	Use:   "run \"PATTERN\" -- COMMAND",
@@ -45,14 +42,35 @@ supports bash-style expansion (including globstar "**"). Any folders containing
 a file that matches the specified pattern will have the command executed with a
 working directory of that folder. Output from each command and a summary of all
 commands run will be printed once execution completes`),
-	Args:  cobra.MinimumNArgs(2),
-	RunE:  runRun,
+	Args: cobra.MinimumNArgs(2),
+	RunE: runRun,
+}
+
+var (
+	preFilterCmds []string
+)
+
+func init() {
+	rootCmd.AddCommand(runCmd)
+
+	runCmd.Flags().StringArrayVarP(&preFilterCmds, "pre-filter-cmd", "", []string{}, "Run initial commands in each directory. If the command fails, skip running subsequent commands in that directory.")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
 	ctx := contextWithSignalCancel(context.Background())
+
 	pattern := args[0]
-	execCmd, execArgs := args[1], args[2:]
+	execCmd, err := shlex.Split(strings.Join(args[1:], " "))
+	if err != nil {
+		return  exitWithCode(MisuseExitCode, err)
+	}
+	preExecCmds := make([][]string, len(preFilterCmds))
+	for i, s := range preFilterCmds {
+		preExecCmds[i], err = shlex.Split(s)
+		if err != nil {
+			return  exitWithCode(MisuseExitCode, err)
+		}
+	}
 
 	// Find all files matching the pattern
 	matches, err := rGlob(pattern)
@@ -73,10 +91,25 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Run the command in each directory
 	statusFmt := "Running command... [%d of %d complete]."
 	cmd.Printf(statusFmt, 0, len(dirs))
-	results := runInDirs(ctx, dirs, execCmd, execArgs...)
+
+	// Add all of the matching directories to the queue
+	results, q := make([]runResult, len(dirs)), make(chan *runResult, len(dirs))
+	for i, d := range dirs {
+		results[i].Dir = d
+		results[i].done = make(chan bool)
+		q <- &results[i]
+	}
+	close(q)
+	// Spin up workers to run the commands in each directory
+	for range results {
+		go func() {
+			for r := range q {
+				runInDir(ctx, preExecCmds, execCmd, r)
+			}
+		}()
+	}
 
 	// Wait for runs to complete, updating the user periodically
 	for ct, t := 0, time.Tick(100*time.Millisecond); ct < len(results); {
@@ -97,8 +130,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Report the output of each run
 	for _, r := range results {
+		if r.Status == Skipped {
+			continue
+		}
 		cmd.Printf("\n"+"#\n"+"# %s\n"+"#\n"+"\n", r.Dir)
-
 		cmd.Println(r.Stdall.String())
 		if r.Err != nil {
 			cmd.Printf("\nerr: %v\n", r.Err)
@@ -107,67 +142,82 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Report a summary of runs
-	success := true
 	cmd.Printf("\n" + "#\n" + "# Summary \n" + "#\n" + "\n")
+	ct := map[StatusType]int{}
+	for _, r := range results {
+		ct[r.Status]++
+	}
+	for _, s := range []StatusType{Success, Failure, Skipped, Error} {
+		cmd.Printf("%s: %d, ", s, ct[s])
+	}
+	cmd.Println("\b\b")
 	// For each test, print 80 char wide line in fmt: "path/to/dir....[ STATUS]"
 	for _, r := range results {
+		if r.Status == Skipped {
+			continue
+		}
 		d := r.Dir
-		if len(d) > 67 { // Truncate the dir if it's too wide
+		if len(d) > 67 { // Truncate the directory if it's too wide
 			d = d[:67]
 		}
-		cmd.Print(d)
-		cmd.Print(strings.Repeat(".", 70-len(d)))
-		if r.Success {
-			cmd.Println("[PASSED]")
-		} else {
-			cmd.Println("[FAILED]")
-			success = false
-		}
+		cmd.Printf("%s%s[%8v]\n", d, strings.Repeat(".", 70-len(d)), r.Status)
 	}
 
-	if !success {
-		return exitWithCode(10, fmt.Errorf("subcommand failed"))
+	if ct[Success] > 0 || ct[Failure] > 0 {
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		return exitWithCode(FailedCmdExitCode, nil)
 	}
-	// Completed successfully!
-	return nil
+	return nil // Completed successfully!
 }
 
-// runInDirs starts the provided command running in multiple directories.
-func runInDirs(ctx context.Context, dirs []string, name string, args ...string) []runResult {
-	base := exec.CommandContext(ctx, name, args...)
-	results, q := make([]runResult, len(dirs)), make(chan *runResult, len(dirs))
-	defer close(q)
-	for i, d := range dirs { // Queue up directories to run
-		results[i].Dir = d
-		results[i].done = make(chan bool)
-		q <- &results[i]
+// runInDir executes the specified commands, reporting results to the provided runResult.
+func runInDir(ctx context.Context, preExecCmds [][]string, execCmd []string, r *runResult) {
+	defer close(r.done)
+	// Run the pre-filter-cmds in the directory, skipping if one fails
+	for _, c := range preExecCmds {
+		cmd := exec.CommandContext(ctx, c[0], c[1:]...)
+		cmd.Dir = r.Dir
+		// err := cmd.Run()
+		output, err := cmd.CombinedOutput()
+		print(output)
+		if _, ok := err.(*exec.ExitError); err != nil && !ok {
+			r.Status = Error // If it's not an exit error, the command failed to run
+			r.Err = fmt.Errorf("failed to run pre-filter-cmd (%s): %w", strings.Join(cmd.Args, " "), err)
+			return
+		}
+		if !cmd.ProcessState.Success() {
+			r.Status = Skipped
+			r.Err = err
+			return
+		}
 	}
-	for range results {
-		go func() {
-			for r := range q {
-				cmd := *base
-				cmd.Dir = r.Dir
-				cmd.Stdout, cmd.Stderr = io.MultiWriter(&r.Stdout, &r.Stdall), io.MultiWriter(&r.Stderr, &r.Stdall)
-				r.Err = cmd.Run()
-				if r.Err == nil {
-					r.Success = cmd.ProcessState.Success()
-				}
-				close(r.done)
-			}
-		}()
+	// Run the main cmd
+	cmd := exec.CommandContext(ctx, execCmd[0], execCmd[1:]...)
+	cmd.Dir = r.Dir
+	cmd.Stdout, cmd.Stderr = io.MultiWriter(&r.Stdout, &r.Stdall), io.MultiWriter(&r.Stderr, &r.Stdall)
+	r.Err = cmd.Run()
+	if _, ok := r.Err.(*exec.ExitError); r.Err != nil && !ok {
+		r.Status = Error // If it's not an exit error, the command failed to run
+		r.Err = fmt.Errorf("failed to run cmd (%s): %w", strings.Join(cmd.Args, " "), r.Err)
+		return
 	}
-	return results
+	if cmd.ProcessState.Success() {
+		r.Status = Success
+	} else {
+		r.Status = Failure
+	}
 }
 
 // runResult represents a running command in a specific directory.
 type runResult struct {
-	Dir     string
-	Stdout  bytes.Buffer
-	Stderr  bytes.Buffer
-	Stdall  bytes.Buffer
-	Success bool
-	Err     error     // err return by cmd
-	done    chan bool // closed once the cmd is completed
+	Dir    string
+	Stdout bytes.Buffer
+	Stderr bytes.Buffer
+	Stdall bytes.Buffer
+	Status StatusType
+	Err    error     // err return by cmd
+	done   chan bool // closed once the cmd is completed
 }
 
 // Done returns if the command is no longer running.
@@ -179,6 +229,15 @@ func (r *runResult) Done() bool {
 	}
 	return false
 }
+
+type StatusType string
+
+const (
+	Error   StatusType = "ERROR"
+	Skipped StatusType = "SKIPPED"
+	Failure StatusType = "FAILURE"
+	Success StatusType = "SUCCESS"
+)
 
 // rGlob returns a slice of filepaths matching a pattern just like `filepath.Glob`, with additional support for globstars (**).
 func rGlob(pattern string) (matches []string, err error) {

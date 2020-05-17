@@ -43,11 +43,14 @@ var rootCmd = &cobra.Command{
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "%s\n", err)
+		exit := 1
 		if terr, ok := err.(*exitError); ok {
-			os.Exit(terr.code)
+			exit = terr.Code
 		}
-		os.Exit(1)
+		if exit != FailedCmdExitCode {
+			_, _ = fmt.Fprintf(stderr, "%s\n", err)
+		}
+		os.Exit(exit)
 	}
 }
 
@@ -58,7 +61,7 @@ func init() {
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
 
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.butler.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.btlr.yaml)")
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.

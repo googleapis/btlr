@@ -21,29 +21,30 @@ import (
 )
 
 const (
+	FailedCmdExitCode = 2
 	MisuseExitCode    = 50
 	InterruptExitCode = 51
 )
 
 // exitError is a typed error to return.
 type exitError struct {
-	err  error
-	code int
+	Code int
+	Err  error
 }
 
 // Error implements error.
 func (e *exitError) Error() string {
-	if e.err == nil {
+	if e.Err == nil {
 		return "<missing error>"
 	}
-	return e.err.Error()
+	return e.Err.Error()
 }
 
 // exitWithCode prints exits with the specified error and exit code.
 func exitWithCode(code int, err error) *exitError {
 	return &exitError{
-		err:  err,
-		code: code,
+		Err:  err,
+		Code: code,
 	}
 }
 
