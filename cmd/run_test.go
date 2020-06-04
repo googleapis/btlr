@@ -16,9 +16,9 @@ package cmd
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -59,7 +59,7 @@ func TestRun(t *testing.T) {
 	output, err := ExecCmd(rootCmd, "run", filepath.Join(dir, "**", "*.txt"), rmCmd, "foo.txt")
 	outcomes := []struct {
 		contains string
-		want bool
+		want     bool
 	}{
 		{"[ FAILURE]", true},
 		{"[ SUCCESS]", true},
@@ -76,7 +76,7 @@ func TestRun(t *testing.T) {
 	}
 }
 
-func TestPreCmdFilter(t *testing.T) {
+func TestGitDiff(t *testing.T) {
 	// Create temp directory with content
 	dir, err := ioutil.TempDir("", "")
 	if err != nil {
@@ -97,24 +97,37 @@ func TestPreCmdFilter(t *testing.T) {
 		}
 	}
 
-	var rmCmd, preCmd string
+	// Create some git changes to diff against
+	args := [][]string{
+		{"init"}, {"add", "foo"}, {"commit", "-m", "test commit"}, {"add", "bar"},
+	}
+	for _, a := range args {
+		c := exec.Command("git", a...)
+		c.Dir = dir
+		if err := c.Run(); err != nil {
+			t.Fatalf("Failed to set up git in test fir: %v", err)
+		}
+	}
+
+	var rmCmd string
 	switch o := runtime.GOOS; o {
 	case "windows":
-		preCmd = fmt.Sprintf("if %s exists", "foo.txt")
 		rmCmd = "del"
 	default: // linux, darwin
-		preCmd = fmt.Sprintf("sh -c %q", "[ -f foo.txt ]")
 		rmCmd = "rm"
 	}
 
-	output, err := ExecCmd(rootCmd, "run", fmt.Sprintf("--pre-filter-cmd=%s", preCmd), filepath.Join(dir, "**", "*.txt"), rmCmd, "foo.txt")
+	output, err := ExecCmd(rootCmd, "run", "--git-diff=master .", filepath.Join(dir, "**", "*.txt"), rmCmd, "bar.txt")
+	if err != nil {
+		t.Errorf("btlr run failed: %v", err)
+	}
 
 	outcomes := []struct {
 		contains string
-		want bool
+		want     bool
 	}{
-		{"[ FAILURE]", false},
-		{"[ SUCCESS]", true},
+		{filepath.Dir(files[1]), false},
+		{filepath.Dir(files[2]), true},
 	}
 	for _, o := range outcomes {
 		if strings.Contains(output, o.contains) != o.want {
@@ -123,7 +136,6 @@ func TestPreCmdFilter(t *testing.T) {
 			} else {
 				t.Errorf("want: doesn't contain %q, got: \n %s", o.contains, output)
 			}
-
 		}
 	}
 }
@@ -208,7 +220,7 @@ func TestRGlob(t *testing.T) {
 			t.Errorf("%s: pattern '%s' returned error from rGlob: %v", c.desc, c.pattern, err)
 			continue
 		}
-		if ok := EqualStr(c.want, got); !ok {
+		if ok := equalStr(c.want, got); !ok {
 			t.Errorf("%s: wrong match for pattern '%s' (got: %v, want: %v)", c.desc, c.pattern, got, c.want)
 		}
 	}
@@ -226,8 +238,8 @@ func ExecCmd(cmd *cobra.Command, args ...string) (string, error) {
 	return buf.String(), err
 }
 
-// EqualStr returns true if slices contain the equal elements.
-func EqualStr(a, b []string) bool {
+// equalStr returns true if slices contain the equal elements.
+func equalStr(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}

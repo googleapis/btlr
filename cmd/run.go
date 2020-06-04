@@ -43,44 +43,51 @@ a file that matches the specified pattern will have the command executed with a
 working directory of that folder. Output from each command and a summary of all
 commands run will be printed once execution completes`),
 	Args: cobra.MinimumNArgs(2),
-	RunE: runRun,
+	RunE: runRunWrapper,
 }
 
 var (
-	preFilterCmds []string
+	gitDiffArgs string
 )
 
 func init() {
 	rootCmd.AddCommand(runCmd)
 
-	runCmd.Flags().StringArrayVarP(&preFilterCmds, "pre-filter-cmd", "", []string{}, "Run initial commands in each directory. If the command fails, skip running subsequent commands in that directory.")
+	runCmd.Flags().StringVar(&gitDiffArgs, "git-diff", "",
+		"Limits the directories targeted by run to only be included if changes are detected via \"git diff VAL\". If no value is specified, defaults to \"origin/master\".")
 }
 
-func runRun(cmd *cobra.Command, args []string) error {
+// runRunWrapper wraps runRun while watching for sigint/sigterm signals
+func runRunWrapper(cmd *cobra.Command, args []string) error {
 	ctx := contextWithSignalCancel(context.Background())
+	done := make(chan error)
+	go runRun(ctx, cmd, args, done)
+	select {
+	case r := <-done:
+		return r
+	case <-ctx.Done():
+		return exitWithCode(InterruptExitCode, fmt.Errorf("execution interrupted"))
+	}
+}
 
+func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- error) {
 	pattern := args[0]
 	execCmd, err := shlex.Split(strings.Join(args[1:], " "))
 	if err != nil {
-		return  exitWithCode(MisuseExitCode, err)
-	}
-	preExecCmds := make([][]string, len(preFilterCmds))
-	for i, s := range preFilterCmds {
-		preExecCmds[i], err = shlex.Split(s)
-		if err != nil {
-			return  exitWithCode(MisuseExitCode, err)
-		}
+		rtn <- exitWithCode(MisuseExitCode, err)
+		return
 	}
 
-	// Find all files matching the pattern
+	cmd.Print("Collecting directories that match pattern...")
 	matches, err := rGlob(pattern)
 	if err != nil {
-		return exitWithCode(MisuseExitCode, err)
+		rtn <- exitWithCode(MisuseExitCode, err)
+		return
 	}
-	if matches == nil {
-		return exitWithCode(MisuseExitCode, fmt.Errorf("No paths match pattern: '%s'", pattern))
+	if len(matches) == 0 {
+		rtn <- exitWithCode(MisuseExitCode, fmt.Errorf("no paths match pattern: '%s'", pattern))
+		return
 	}
-
 	// From the matching files, reduce to unique directories
 	dirs, hist := []string{}, map[string]bool{}
 	for _, m := range matches {
@@ -90,45 +97,61 @@ func runRun(cmd *cobra.Command, args []string) error {
 			hist[d] = true
 		}
 	}
+	cmd.Printf("%d collected.\n", len(matches))
 
-	statusFmt := "Running command... [%d of %d complete]."
-	cmd.Printf(statusFmt, 0, len(dirs))
-
-	// Add all of the matching directories to the queue
-	results, q := make([]runResult, len(dirs)), make(chan *runResult, len(dirs))
-	for i, d := range dirs {
-		results[i].Dir = d
-		results[i].done = make(chan bool)
-		q <- &results[i]
-	}
-	close(q)
-	// Spin up workers to run the commands in each directory
-	for range results {
-		go func() {
-			for r := range q {
-				runInDir(ctx, preExecCmds, execCmd, r)
-			}
-		}()
-	}
-
-	// Wait for runs to complete, updating the user periodically
-	for ct, t := 0, time.Tick(100*time.Millisecond); ct < len(results); {
-		select {
-		case <-ctx.Done():
-			return exitWithCode(InterruptExitCode, fmt.Errorf("execution interrupted"))
-		case <-t: // pass
+	// Check for changed folders with "git diff"
+	if gitDiffArgs != "" {
+		statusFmt := "Checking for changes with \"git diff\"... [%d of %d complete]."
+		cmd.Printf(statusFmt, 0, len(dirs))
+		args, err := shlex.Split(gitDiffArgs)
+		if err != nil {
+			rtn <- exitWithCode(MisuseExitCode, err)
+			return
 		}
-		ct = 0
+		results := startInDirs(ctx, append([]string{"git", "diff", "--exit-code"}, args...), dirs)
+		// Wait for runs to complete, updating the user periodically
+		for range time.Tick(100 * time.Millisecond) {
+			ct := 0
+			for _, r := range results {
+				if r.Done() {
+					ct++
+				}
+			}
+			cmd.Printf("\r"+statusFmt, ct, len(dirs))
+			if ct >= len(dirs) {
+				break
+			}
+		}
+		cmd.Println()
+		// reduce to only directories with changes
+		dirs = make([]string, 0, len(dirs))
+		for _, r := range results {
+			// git diff returns a non-zero exit code if changes are found
+			if r.Status != Success {
+				dirs = append(dirs, r.Dir)
+			}
+		}
+	}
+
+	statusFmt := "Running command(s)... [%d of %d complete]."
+	cmd.Printf(statusFmt, 0, len(dirs))
+	results := startInDirs(ctx, execCmd, dirs)
+	// Wait for runs to complete, updating the user periodically
+	for range time.Tick(100 * time.Millisecond) {
+		ct := 0
 		for _, r := range results {
 			if r.Done() {
 				ct++
 			}
 		}
-		cmd.Printf("\r"+statusFmt, ct, len(dirs)) // overwrite current status
+		cmd.Printf("\r"+statusFmt, ct, len(dirs))
+		if ct >= len(dirs) {
+			break
+		}
 	}
 	cmd.Println()
 
-	// Report the output of each run
+	// Report the output of each command
 	for _, r := range results {
 		if r.Status == Skipped {
 			continue
@@ -141,7 +164,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		cmd.Println()
 	}
 
-	// Report a summary of runs
+	// Summarize runs in one place for users
 	cmd.Printf("\n" + "#\n" + "# Summary \n" + "#\n" + "\n")
 	ct := map[StatusType]int{}
 	for _, r := range results {
@@ -163,35 +186,38 @@ func runRun(cmd *cobra.Command, args []string) error {
 		cmd.Printf("%s%s[%8v]\n", d, strings.Repeat(".", 70-len(d)), r.Status)
 	}
 
-	if ct[Success] > 0 || ct[Failure] > 0 {
-		cmd.SilenceErrors = true
-		cmd.SilenceUsage = true
-		return exitWithCode(FailedCmdExitCode, nil)
+	if ct[Failure] > 0 || ct[Error] > 0 {
+		// this non-zero exitcode is expected, so don't show usage
+		cmd.SilenceErrors, cmd.SilenceUsage = true, true
+		rtn <- exitWithCode(FailedCmdExitCode, nil)
 	}
-	return nil // Completed successfully!
+	rtn <- nil // Completed successfully!
+}
+
+// startInDirs starts a command running in multiple directories.
+func startInDirs(ctx context.Context, execCmd []string, dirs []string) []runResult {
+	results, q := make([]runResult, len(dirs)), make(chan *runResult, len(dirs))
+	defer close(q)
+	// Spin up workers to run the commands in each directory
+	for range results {
+		go func() {
+			for r := range q {
+				runInDir(ctx, execCmd, r)
+			}
+		}()
+	}
+	// Queue up each directory to ber run
+	for i, d := range dirs {
+		results[i].Dir = d
+		results[i].done = make(chan bool)
+		q <- &results[i]
+	}
+	return results
 }
 
 // runInDir executes the specified commands, reporting results to the provided runResult.
-func runInDir(ctx context.Context, preExecCmds [][]string, execCmd []string, r *runResult) {
+func runInDir(ctx context.Context, execCmd []string, r *runResult) {
 	defer close(r.done)
-	// Run the pre-filter-cmds in the directory, skipping if one fails
-	for _, c := range preExecCmds {
-		cmd := exec.CommandContext(ctx, c[0], c[1:]...)
-		cmd.Dir = r.Dir
-		// err := cmd.Run()
-		output, err := cmd.CombinedOutput()
-		print(output)
-		if _, ok := err.(*exec.ExitError); err != nil && !ok {
-			r.Status = Error // If it's not an exit error, the command failed to run
-			r.Err = fmt.Errorf("failed to run pre-filter-cmd (%s): %w", strings.Join(cmd.Args, " "), err)
-			return
-		}
-		if !cmd.ProcessState.Success() {
-			r.Status = Skipped
-			r.Err = err
-			return
-		}
-	}
 	// Run the main cmd
 	cmd := exec.CommandContext(ctx, execCmd[0], execCmd[1:]...)
 	cmd.Dir = r.Dir
