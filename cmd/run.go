@@ -27,6 +27,7 @@ import (
 
 	"github.com/google/shlex"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh/terminal"
 )
 
 var runCmd = &cobra.Command{
@@ -48,6 +49,8 @@ commands run will be printed once execution completes`),
 
 var (
 	gitDiffArgs string
+
+	isTerm = terminal.IsTerminal(int(os.Stdout.Fd()))
 )
 
 func init() {
@@ -117,7 +120,9 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 					ct++
 				}
 			}
-			cmd.Printf("\r"+statusFmt, ct, len(dirs))
+			if isTerm {
+				cmd.Printf("\r"+statusFmt, ct, len(dirs))
+			}
 			if ct >= len(dirs) {
 				break
 			}
@@ -133,6 +138,7 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 		}
 	}
 
+
 	statusFmt := "Running command(s)... [%d of %d complete]."
 	cmd.Printf(statusFmt, 0, len(dirs))
 	results := startInDirs(ctx, execCmd, dirs)
@@ -144,7 +150,9 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 				ct++
 			}
 		}
-		cmd.Printf("\r"+statusFmt, ct, len(dirs))
+		if isTerm {
+			cmd.Printf("\r"+statusFmt, ct, len(dirs))
+		}
 		if ct >= len(dirs) {
 			break
 		}
