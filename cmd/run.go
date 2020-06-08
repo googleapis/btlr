@@ -49,8 +49,7 @@ commands run will be printed once execution completes`),
 
 var (
 	gitDiffArgs string
-
-	isTerm = terminal.IsTerminal(int(os.Stdout.Fd()))
+	interactive bool
 )
 
 func init() {
@@ -58,6 +57,8 @@ func init() {
 
 	runCmd.Flags().StringVar(&gitDiffArgs, "git-diff", "",
 		"Limits the directories targeted by run to only be included if changes are detected via \"git diff VAL\". If no value is specified, defaults to \"origin/master\".")
+	runCmd.Flags().BoolVar(&interactive, "interactive", terminal.IsTerminal(int(os.Stdout.Fd())),
+		"Explicitly set to run interactively. If not used, will attempt to autodetect.")
 }
 
 // runRunWrapper wraps runRun while watching for sigint/sigterm signals
@@ -120,7 +121,7 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 					ct++
 				}
 			}
-			if isTerm {
+			if interactive {
 				cmd.Printf("\r"+statusFmt, ct, len(dirs))
 			}
 			if ct >= len(dirs) {
@@ -150,7 +151,7 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 				ct++
 			}
 		}
-		if isTerm {
+		if interactive {
 			cmd.Printf("\r"+statusFmt, ct, len(dirs))
 		}
 		if ct >= len(dirs) {
