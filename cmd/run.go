@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ commands run will be printed once execution completes`),
 var (
 	gitDiffArgs string
 	interactive bool
+	maxConcurrently int
 )
 
 func init() {
@@ -59,6 +61,8 @@ func init() {
 		"Limits the directories targeted by run to only be included if changes are detected via \"git diff VAL\". If no value is specified, defaults to \"origin/master\".")
 	runCmd.Flags().BoolVar(&interactive, "interactive", terminal.IsTerminal(int(os.Stdout.Fd())),
 		"Explicitly set to run interactively. If not used, will attempt to autodetect.")
+	runCmd.Flags().IntVar(&maxConcurrently, "max-concurrency", runtime.NumCPU(),
+		"Limits the number of directories run max-concurrency. Defaults to 3 time the physical number of cores.")
 }
 
 // runRunWrapper wraps runRun while watching for sigint/sigterm signals
@@ -112,7 +116,7 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 			rtn <- exitWithCode(MisuseExitCode, err)
 			return
 		}
-		results := startInDirs(ctx, append([]string{"git", "diff", "--exit-code"}, args...), dirs)
+		results := startInDirs(ctx, maxConcurrently, append([]string{"git", "diff", "--exit-code"}, args...), dirs)
 		// Wait for runs to complete, updating the user periodically
 		for range time.Tick(100 * time.Millisecond) {
 			ct := 0
@@ -142,7 +146,7 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 
 	statusFmt := "Running command(s)... [%d of %d complete]."
 	cmd.Printf(statusFmt, 0, len(dirs))
-	results := startInDirs(ctx, execCmd, dirs)
+	results := startInDirs(ctx, maxConcurrently, execCmd, dirs)
 	// Wait for runs to complete, updating the user periodically
 	for range time.Tick(100 * time.Millisecond) {
 		ct := 0
@@ -204,11 +208,11 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 }
 
 // startInDirs starts a command running in multiple directories.
-func startInDirs(ctx context.Context, execCmd []string, dirs []string) []runResult {
+func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []string) []runResult {
 	results, q := make([]runResult, len(dirs)), make(chan *runResult, len(dirs))
 	defer close(q)
 	// Spin up workers to run the commands in each directory
-	for range results {
+	for i := 0; i < maxThreads; i++ {
 		go func() {
 			for r := range q {
 				runInDir(ctx, execCmd, r)
