@@ -23,7 +23,6 @@ import (
 const (
 	FailedCmdExitCode = 2
 	MisuseExitCode    = 50
-	InterruptExitCode = 51
 )
 
 // exitError is a typed error to return.

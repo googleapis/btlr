@@ -17,6 +17,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,12 +46,12 @@ a file that matches the specified pattern will have the command executed with a
 working directory of that folder. Output from each command and a summary of all
 commands run will be printed once execution completes`),
 	Args: cobra.MinimumNArgs(2),
-	RunE: runRunWrapper,
+	RunE: runRun,
 }
 
 var (
-	gitDiffArgs string
-	interactive bool
+	gitDiffArgs     string
+	interactive     bool
 	maxConcurrently int
 )
 
@@ -65,36 +66,22 @@ func init() {
 		"Limits the number of directories run max-concurrency. Defaults to 3 time the physical number of cores.")
 }
 
-// runRunWrapper wraps runRun while watching for sigint/sigterm signals
-func runRunWrapper(cmd *cobra.Command, args []string) error {
+func runRun(cmd *cobra.Command, args []string) error {
 	ctx := contextWithSignalCancel(context.Background())
-	done := make(chan error)
-	go runRun(ctx, cmd, args, done)
-	select {
-	case r := <-done:
-		return r
-	case <-ctx.Done():
-		return exitWithCode(InterruptExitCode, fmt.Errorf("execution interrupted"))
-	}
-}
 
-func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- error) {
 	pattern := args[0]
 	execCmd, err := shlex.Split(strings.Join(args[1:], " "))
 	if err != nil {
-		rtn <- exitWithCode(MisuseExitCode, err)
-		return
+		return exitWithCode(MisuseExitCode, err)
 	}
 
 	cmd.Print("Collecting directories that match pattern...")
 	matches, err := rGlob(pattern)
 	if err != nil {
-		rtn <- exitWithCode(MisuseExitCode, err)
-		return
+		return exitWithCode(MisuseExitCode, err)
 	}
 	if len(matches) == 0 {
-		rtn <- exitWithCode(MisuseExitCode, fmt.Errorf("no paths match pattern: '%s'", pattern))
-		return
+		return exitWithCode(MisuseExitCode, fmt.Errorf("no paths match pattern: '%s'", pattern))
 	}
 	// From the matching files, reduce to unique directories
 	dirs, hist := []string{}, map[string]bool{}
@@ -113,8 +100,7 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 		cmd.Printf(statusFmt, 0, len(dirs))
 		args, err := shlex.Split(gitDiffArgs)
 		if err != nil {
-			rtn <- exitWithCode(MisuseExitCode, err)
-			return
+			return exitWithCode(MisuseExitCode, err)
 		}
 		results := startInDirs(ctx, maxConcurrently, append([]string{"git", "diff", "--exit-code"}, args...), dirs)
 		// Wait for runs to complete, updating the user periodically
@@ -142,7 +128,6 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 			}
 		}
 	}
-
 
 	statusFmt := "Running command(s)... [%d of %d complete]."
 	cmd.Printf(statusFmt, 0, len(dirs))
@@ -202,9 +187,10 @@ func runRun(ctx context.Context, cmd *cobra.Command, args []string, rtn chan<- e
 	if ct[Failure] > 0 || ct[Error] > 0 {
 		// this non-zero exitcode is expected, so don't show usage
 		cmd.SilenceErrors, cmd.SilenceUsage = true, true
-		rtn <- exitWithCode(FailedCmdExitCode, nil)
+		return exitWithCode(FailedCmdExitCode, nil)
 	}
-	rtn <- nil // Completed successfully!
+
+	return nil // Completed successfully!
 }
 
 // startInDirs starts a command running in multiple directories.
@@ -238,6 +224,10 @@ func runInDir(ctx context.Context, execCmd []string, r *runResult) {
 	r.Err = cmd.Run()
 	if _, ok := r.Err.(*exec.ExitError); r.Err != nil && !ok {
 		r.Status = Error // If it's not an exit error, the command failed to run
+		// A canceled context means that a sigint or sigterm was received
+		if r.Err == context.Canceled {
+			r.Err = errors.New("interupted before complete (sigint or sigterm)")
+		}
 		r.Err = fmt.Errorf("failed to run cmd (%s): %w", strings.Join(cmd.Args, " "), r.Err)
 		return
 	}
