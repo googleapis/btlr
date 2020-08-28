@@ -16,6 +16,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -137,6 +138,48 @@ func TestGitDiff(t *testing.T) {
 				t.Errorf("want: doesn't contain %q, got: \n %s", o.contains, output)
 			}
 		}
+	}
+}
+
+func TestMaxCmdDur(t *testing.T) {
+	// Create temp directory with content
+	dir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Fatalf("Failure setting up tempdir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	files := []string{
+		filepath.Join(dir, "foo", "foo.txt"),
+		filepath.Join(dir, "bar", "bar.txt"),
+	}
+	for _, f := range files {
+		if err := os.MkdirAll(filepath.Dir(f), os.ModePerm); err != nil {
+			t.Fatalf("Failure to set up test file dir: %v", err)
+		}
+		if err := ioutil.WriteFile(f, []byte("hello"), os.ModePerm); err != nil {
+			t.Fatalf("Failure to set up test file: %v", err)
+		}
+	}
+
+	var sleepCmd string
+	switch o := runtime.GOOS; o {
+	case "windows":
+		sleepCmd = "timeout 2"
+	default: // linux, darwin
+		sleepCmd = "sleep 2"
+	}
+
+	output, err := ExecCmd(rootCmd, "run", "--max-cmd-duration=1s", filepath.Join(dir, "**", "*.txt"), sleepCmd)
+	if err != nil {
+		var eErr *exitError
+		if !errors.As(err, &eErr) || eErr.Code != 2 {
+			t.Fatalf("btlr run failed: %v", err)
+		}
+	}
+
+	w := "signal: killed"
+	if !strings.Contains(output, w) {
+		t.Errorf("want %q, got: \n %s", w, output)
 	}
 }
 

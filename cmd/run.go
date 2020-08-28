@@ -50,20 +50,23 @@ commands run will be printed once execution completes`),
 }
 
 var (
-	gitDiffArgs     string
-	interactive     bool
-	maxConcurrently int
+	gitDiffArgs    string
+	interactive    bool
+	maxConcurrency int
+	maxCmdDur      time.Duration
 )
 
 func init() {
 	rootCmd.AddCommand(runCmd)
 
 	runCmd.Flags().StringVar(&gitDiffArgs, "git-diff", "",
-		"Limits the directories targeted by run to only be included if changes are detected via \"git diff VAL\". If no value is specified, defaults to \"origin/master\".")
+		"Limits the directories targeted by run to only be included if changes are detected via \"git diff VAL\".")
 	runCmd.Flags().BoolVar(&interactive, "interactive", terminal.IsTerminal(int(os.Stdout.Fd())),
-		"Explicitly set to run interactively. If not used, will attempt to autodetect.")
-	runCmd.Flags().IntVar(&maxConcurrently, "max-concurrency", runtime.NumCPU(),
+		"Explicitly set to run interactively. If not specified, will attempt to determine automatically if enviroment is a terminal.")
+	runCmd.Flags().IntVar(&maxConcurrency, "max-concurrency", runtime.NumCPU(),
 		"Limits the number of directories run max-concurrency. Defaults to 3 time the physical number of cores.")
+	runCmd.Flags().DurationVar(&maxCmdDur, "max-cmd-duration", 0,
+		"Limits the number of time each cmd is allowed to execute for. At the duration, cmds will be sent a SIGINT signal.")
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -102,7 +105,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return exitWithCode(MisuseExitCode, err)
 		}
-		results := startInDirs(ctx, maxConcurrently, append([]string{"git", "diff", "--exit-code"}, args...), dirs)
+		results := startInDirs(ctx, maxConcurrency, append([]string{"git", "diff", "--exit-code"}, args...), dirs)
 		// Wait for runs to complete, updating the user periodically
 		for range time.Tick(100 * time.Millisecond) {
 			ct := 0
@@ -131,7 +134,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	statusFmt := "Running command(s)... [%d of %d complete]."
 	cmd.Printf(statusFmt, 0, len(dirs))
-	results := startInDirs(ctx, maxConcurrently, execCmd, dirs)
+	results := startInDirs(ctx, maxConcurrency, execCmd, dirs)
 	// Wait for runs to complete, updating the user periodically
 	for range time.Tick(100 * time.Millisecond) {
 		ct := 0
@@ -205,7 +208,7 @@ func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []s
 			}
 		}()
 	}
-	// Queue up each directory to ber run
+	// Queue up each directory to be run
 	for i, d := range dirs {
 		results[i].Dir = d
 		results[i].done = make(chan bool)
@@ -217,6 +220,12 @@ func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []s
 // runInDir executes the specified commands, reporting results to the provided runResult.
 func runInDir(ctx context.Context, execCmd []string, r *runResult) {
 	defer close(r.done)
+	// set a timeout if neccesary
+	if maxCmdDur != 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, maxCmdDur)
+		defer cancel()
+	}
 	// Run the main cmd
 	cmd := exec.CommandContext(ctx, execCmd[0], execCmd[1:]...)
 	cmd.Dir = r.Dir
