@@ -22,9 +22,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/shlex"
@@ -70,7 +72,8 @@ func init() {
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
-	ctx := contextWithSignalCancel(context.Background())
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	pattern := args[0]
 	execCmd, err := shlex.Split(strings.Join(args[1:], " "))

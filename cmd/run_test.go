@@ -58,6 +58,9 @@ func TestRun(t *testing.T) {
 	}
 
 	output, err := ExecCmd(rootCmd, "run", filepath.Join(dir, "**", "*.txt"), rmCmd, "foo.txt")
+	if err != nil {
+		t.Errorf("cmd failed: %s", err)
+	}
 	outcomes := []struct {
 		contains string
 		want     bool
@@ -118,7 +121,7 @@ func TestGitDiff(t *testing.T) {
 		rmCmd = "rm"
 	}
 
-	output, err := ExecCmd(rootCmd, "run", "--git-diff=master .", filepath.Join(dir, "**", "*.txt"), rmCmd, "bar.txt")
+	output, err := ExecCmd(rootCmd, "run", "--git-diff=main .", filepath.Join(dir, "**", "*.txt"), rmCmd, "bar.txt")
 	if err != nil {
 		t.Errorf("btlr run failed: %v", err)
 	}

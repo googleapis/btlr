@@ -13,13 +13,6 @@
 // limitations under the License.
 package cmd
 
-import (
-	"context"
-	"os"
-	"os/signal"
-	"syscall"
-)
-
 const (
 	FailedCmdExitCode = 2
 	MisuseExitCode    = 50
@@ -45,16 +38,4 @@ func exitWithCode(code int, err error) *exitError {
 		Err:  err,
 		Code: code,
 	}
-}
-
-// contextWithSignalCancel schedules a context to be canceled when it receives sigint/sigterm signals.
-func contextWithSignalCancel(ctx context.Context) context.Context {
-	ctx, cancel := context.WithCancel(ctx)
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		_ = <-sigs
-		cancel()
-	}()
-	return ctx
 }
