@@ -138,29 +138,28 @@ func runRun(cmd *cobra.Command, args []string) error {
 	statusFmt := "Running command(s)... [%d of %d complete]."
 	cmd.Printf(statusFmt, 0, len(dirs))
 	results := startInDirs(ctx, maxConcurrency, execCmd, dirs)
-	// Wait for runs to complete, updating the user periodically
-	for range time.Tick(100 * time.Millisecond) {
-		ct := 0
-		for _, r := range results {
-			if r.Done() {
-				ct++
+
+	// Wait for runs to complete, outputing the results as they finish
+	updateTick := time.NewTicker(100 * time.Millisecond)
+	for i := range results {
+		cmd.Printf("\n"+"#\n"+"# %s\n"+"#\n"+"\n", results[i].Dir)
+
+		// Wait for the result to finish, or update the user on the status while waiting
+		for {
+			select {
+			case <-updateTick.C:
+				if interactive {
+					cmd.Printf("\r"+statusFmt, i, len(dirs))
+				}
+				continue
+			case <-results[i].done:
 			}
-		}
-		if interactive {
-			cmd.Printf("\r"+statusFmt, ct, len(dirs))
-		}
-		if ct >= len(dirs) {
 			break
 		}
-	}
-	cmd.Println()
-
-	// Report the output of each command
-	for _, r := range results {
+		r := results[i]
 		if r.Status == Skipped {
 			continue
 		}
-		cmd.Printf("\n"+"#\n"+"# %s\n"+"#\n"+"\n", r.Dir)
 		cmd.Println(r.Stdall.String())
 		if r.Err != nil {
 			cmd.Printf("\nerr: %v\n", r.Err)

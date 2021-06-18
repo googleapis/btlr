@@ -57,10 +57,7 @@ func TestRun(t *testing.T) {
 		rmCmd = "rm"
 	}
 
-	output, err := ExecCmd(rootCmd, "run", filepath.Join(dir, "**", "*.txt"), rmCmd, "foo.txt")
-	if err != nil {
-		t.Errorf("cmd failed: %s", err)
-	}
+	output, _ := ExecCmd(rootCmd, "run", filepath.Join(dir, "**", "*.txt"), rmCmd, "foo.txt")
 	outcomes := []struct {
 		contains string
 		want     bool
