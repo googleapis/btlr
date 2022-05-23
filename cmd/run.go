@@ -35,18 +35,19 @@ import (
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run \"PATTERN\" -- COMMAND",
-	Short: "Run a command into directories containing files that match the specified pattern.",
+	Use:   "run \"pattern1\" [pattern2 ....] -- COMMAND",
+	Short: "Run a command into directories that match the specified pattern.",
 	Long: strings.TrimSpace(`
 Runs a specific command in parallel, targeting multiple directories concurrently.
 
 btlr run \"PATTERN\" -- COMMAND
 
-"PATTERN" is a glob-style pattern that is matched against files against that 
-supports bash-style expansion (including globstar "**"). Any folders containing
-a file that matches the specified pattern will have the command executed with a
-working directory of that folder. Output from each command and a summary of all
-commands run will be printed once execution completes`),
+"PATTERN" is a glob-style pattern that is matched against files against that
+supports bash-style expansion (including globstar "**"). Any folders matching
+the pattern or containing a file that matches the specified pattern will have
+the command executed with a working directory of that folder. Output from each
+command and a summary of all commands run will be printed once execution
+completes`),
 	Args: cobra.MinimumNArgs(2),
 	RunE: runRun,
 }
@@ -75,27 +76,44 @@ func runRun(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pattern := args[0]
-	execCmd, err := shlex.Split(strings.Join(args[1:], " "))
+	// Any args before "--" are possible patterns
+	pCt := cmd.ArgsLenAtDash()
+	if pCt == -1 {
+		// If no "--" is specified, assume only one pattern
+		pCt = 1
+	}
+
+	patterns := args[:pCt]
+	execCmd, err := shlex.Split(strings.Join(args[pCt:], " "))
 	if err != nil {
 		return exitWithCode(MisuseExitCode, err)
 	}
 
 	cmd.Print("Collecting directories that match pattern...")
-	matches, err := rGlob(pattern)
-	if err != nil {
-		return exitWithCode(MisuseExitCode, err)
+	matches := []string{}
+	for _, p := range patterns {
+		m, err := rGlob(p)
+		if err != nil {
+			return exitWithCode(MisuseExitCode, err)
+		}
+		matches = append(matches, m...)
 	}
 	if len(matches) == 0 {
-		return exitWithCode(MisuseExitCode, fmt.Errorf("no paths match pattern: '%s'", pattern))
+		return exitWithCode(MisuseExitCode, fmt.Errorf("no paths match pattern(s): '%s'", strings.Join(patterns, " ")))
 	}
 	// From the matching files, reduce to unique directories
 	dirs, hist := []string{}, map[string]bool{}
 	for _, m := range matches {
-		d := filepath.Dir(m)
-		if _, seen := hist[d]; !seen {
-			dirs = append(dirs, d)
-			hist[d] = true
+		f, err := os.Stat(m)
+		if err != nil {
+			return exitWithCode(FailedCmdExitCode, fmt.Errorf("error determining paths: '%w'", err))
+		}
+		if !f.IsDir() { // only collect directories, not individual files
+			m = filepath.Dir(m)
+		}
+		if _, seen := hist[m]; !seen {
+			dirs = append(dirs, m)
+			hist[m] = true
 		}
 	}
 	cmd.Printf("%d collected.\n", len(matches))

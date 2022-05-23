@@ -77,6 +77,55 @@ func TestRun(t *testing.T) {
 	}
 }
 
+func TestMultiTest(t *testing.T) {
+	// Create temp directory with content
+	dir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Fatalf("Failure setting up tempdir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+	files := []string{
+		filepath.Join(dir, "foo", "foo.txt"),
+		filepath.Join(dir, "foo", "bar.txt"),
+		filepath.Join(dir, "bar", "bar.txt"),
+	}
+	for _, f := range files {
+		if err := os.MkdirAll(filepath.Dir(f), os.ModePerm); err != nil {
+			t.Fatalf("Failure to set up test file dir: %v", err)
+		}
+		if err := ioutil.WriteFile(f, []byte("hello"), os.ModePerm); err != nil {
+			t.Fatalf("Failure to set up test file: %v", err)
+		}
+	}
+
+	var rmCmd string
+	switch o := runtime.GOOS; o {
+	case "windows":
+		rmCmd = "del"
+	default: // linux, darwin
+		rmCmd = "rm"
+	}
+
+	output, _ := ExecCmd(rootCmd, "run", filepath.Join(dir, "foo", ""), filepath.Join(dir, "bar", ""), "--", rmCmd, "foo.txt")
+	outcomes := []struct {
+		contains string
+		want     bool
+	}{
+		{"[ FAILURE]", true},
+		{"[ SUCCESS]", true},
+	}
+	for _, o := range outcomes {
+		if strings.Contains(output, o.contains) != o.want {
+			if o.want {
+				t.Errorf("want: contains %q, got: \n %s", o.contains, output)
+			} else {
+				t.Errorf("want: doesn't contain %q, got: \n %s", o.contains, output)
+			}
+
+		}
+	}
+}
+
 func TestGitDiff(t *testing.T) {
 	// Create temp directory with content
 	dir, err := ioutil.TempDir("", "")
