@@ -25,6 +25,10 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
+        goarch: ["", "386"]
+        excludes: 
+          - os: macos-latest
+            goarch: 12
       fail-fast: false
     steps:
       - name: Setup Go
@@ -42,7 +46,7 @@ jobs:
         os: [windows-latest, ubuntu-latest]
       fail-fast: false
     env:
-      GOARCH: 386 
+      GOARCH: ${{ matrix.goarch }} 
     steps:
       - name: Setup Go
         uses: actions/setup-go@v3
