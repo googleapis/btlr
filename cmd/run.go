@@ -34,10 +34,20 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
-var runCmd = &cobra.Command{
-	Use:   "run \"pattern1\" [pattern2 ....] -- COMMAND",
-	Short: "Run a command into directories that match the specified pattern.",
-	Long: strings.TrimSpace(`
+type runCfg struct {
+	gitDiffArgs    string
+	interactive    bool
+	maxConcurrency int
+	maxCmdDur      time.Duration
+}
+
+func registerRunCommand(root *cobra.Command) {
+	cfg := &runCfg{}
+
+	runCmd := &cobra.Command{
+		Use:   "run \"pattern1\" [pattern2 ....] -- COMMAND",
+		Short: "Run a command into directories that match the specified pattern.",
+		Long: strings.TrimSpace(`
 Runs a specific command in parallel, targeting multiple directories concurrently.
 
 btlr run \"PATTERN\" -- COMMAND
@@ -48,31 +58,24 @@ the pattern or containing a file that matches the specified pattern will have
 the command executed with a working directory of that folder. Output from each
 command and a summary of all commands run will be printed once execution
 completes`),
-	Args: cobra.MinimumNArgs(2),
-	RunE: runRun,
-}
-
-var (
-	gitDiffArgs    string
-	interactive    bool
-	maxConcurrency int
-	maxCmdDur      time.Duration
-)
-
-func init() {
-	rootCmd.AddCommand(runCmd)
-
-	runCmd.Flags().StringVar(&gitDiffArgs, "git-diff", "",
+		Args: cobra.MinimumNArgs(2),
+		RunE: func(c *cobra.Command, args []string) error {
+			return runRun(c, args, cfg)
+		},
+	}
+	runCmd.Flags().StringVar(&cfg.gitDiffArgs, "git-diff", "",
 		"Limits the directories targeted by run to only be included if changes are detected via \"git diff VAL\".")
-	runCmd.Flags().BoolVar(&interactive, "interactive", terminal.IsTerminal(int(os.Stdout.Fd())),
+	runCmd.Flags().BoolVar(&cfg.interactive, "interactive", terminal.IsTerminal(int(os.Stdout.Fd())),
 		"Explicitly set to run interactively. If not specified, will attempt to determine automatically if enviroment is a terminal.")
-	runCmd.Flags().IntVar(&maxConcurrency, "max-concurrency", runtime.NumCPU(),
+	runCmd.Flags().IntVar(&cfg.maxConcurrency, "max-concurrency", runtime.NumCPU(),
 		"Limits the number of directories run max-concurrency. Defaults to 3 time the physical number of cores.")
-	runCmd.Flags().DurationVar(&maxCmdDur, "max-cmd-duration", 0,
+	runCmd.Flags().DurationVar(&cfg.maxCmdDur, "max-cmd-duration", 0,
 		"Limits the number of time each cmd is allowed to execute for. At the duration, cmds will be sent a SIGINT signal.")
+
+	root.AddCommand(runCmd)
 }
 
-func runRun(cmd *cobra.Command, args []string) error {
+func runRun(cmd *cobra.Command, args []string, cfg *runCfg) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -119,14 +122,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 	cmd.Printf("%d collected.\n", len(matches))
 
 	// Check for changed folders with "git diff"
-	if gitDiffArgs != "" {
+	if cfg.gitDiffArgs != "" {
 		statusFmt := "Checking for changes with \"git diff\"... [%d of %d complete]."
 		cmd.Printf(statusFmt, 0, len(dirs))
-		args, err := shlex.Split(gitDiffArgs)
+		args, err := shlex.Split(cfg.gitDiffArgs)
 		if err != nil {
 			return exitWithCode(MisuseExitCode, err)
 		}
-		results := startInDirs(ctx, maxConcurrency, append([]string{"git", "diff", "--exit-code"}, args...), dirs)
+		results := startInDirs(ctx, cfg.maxConcurrency, append([]string{"git", "diff", "--exit-code"}, args...), dirs, cfg.maxCmdDur)
 		// Wait for runs to complete, updating the user periodically
 		for range time.Tick(100 * time.Millisecond) {
 			ct := 0
@@ -135,7 +138,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 					ct++
 				}
 			}
-			if interactive {
+			if cfg.interactive {
 				cmd.Printf("\r"+statusFmt, ct, len(dirs))
 			}
 			if ct >= len(dirs) {
@@ -155,7 +158,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	statusFmt := "Running command(s)... [%d of %d complete]."
 	cmd.Printf(statusFmt, 0, len(dirs))
-	results := startInDirs(ctx, maxConcurrency, execCmd, dirs)
+	results := startInDirs(ctx, cfg.maxConcurrency, execCmd, dirs, cfg.maxCmdDur)
 
 	// Wait for runs to complete, outputing the results as they finish
 	updateTick := time.NewTicker(100 * time.Millisecond)
@@ -166,7 +169,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		for {
 			select {
 			case <-updateTick.C:
-				if interactive {
+				if cfg.interactive {
 					cmd.Printf("\r"+statusFmt, i, len(dirs))
 				}
 				continue
@@ -217,14 +220,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 }
 
 // startInDirs starts a command running in multiple directories.
-func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []string) []runResult {
+func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []string, maxDur time.Duration) []runResult {
 	results, q := make([]runResult, len(dirs)), make(chan *runResult, len(dirs))
 	defer close(q)
 	// Spin up workers to run the commands in each directory
 	for i := 0; i < maxThreads; i++ {
 		go func() {
 			for r := range q {
-				runInDir(ctx, execCmd, r)
+				runInDir(ctx, execCmd, r, maxDur)
 			}
 		}()
 	}
@@ -238,12 +241,12 @@ func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []s
 }
 
 // runInDir executes the specified commands, reporting results to the provided runResult.
-func runInDir(ctx context.Context, execCmd []string, r *runResult) {
+func runInDir(ctx context.Context, execCmd []string, r *runResult, maxDur time.Duration) {
 	defer close(r.done)
 	// set a timeout if neccesary
-	if maxCmdDur != 0 {
+	if maxDur != 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, maxCmdDur)
+		ctx, cancel = context.WithTimeout(ctx, maxDur)
 		defer cancel()
 	}
 	// Run the main cmd

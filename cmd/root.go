@@ -15,7 +15,6 @@
 package cmd
 
 import (
-	"fmt"
 	"log"
 	"os"
 
@@ -31,40 +30,31 @@ var (
 	cfgFile string
 )
 
-// rootCmd represents the base command when called without any subcommands
-var rootCmd = &cobra.Command{
-	Use:   "btlr",
-	Short: "btlr is a cli to make it easy to execute commands reproducibly.",
-	Long:  `btlr is a cli to make it easy to execute commands reproducibly.`,
+func NewCommand() *cobra.Command {
+	cobra.OnInitialize(initConfig)
+
+	c := &cobra.Command{
+		Use:   "btlr",
+		Short: "btlr is a cli to make it easy to execute commands reproducibly.",
+		Long:  `btlr is a cli to make it easy to execute commands reproducibly.`,
+	}
+
+	c.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.btlr.yaml)")
+
+	registerRunCommand(c)
+	return c
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := NewCommand().Execute(); err != nil {
 		exit := 1
 		if terr, ok := err.(*exitError); ok {
 			exit = terr.Code
 		}
-		if exit != FailedCmdExitCode {
-			_, _ = fmt.Fprintf(stderr, "%s\n", err)
-		}
 		os.Exit(exit)
 	}
-}
-
-func init() {
-	cobra.OnInitialize(initConfig)
-
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
-
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.btlr.yaml)")
-
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
 // initConfig reads in config file and ENV variables if set.
