@@ -41,7 +41,7 @@ jobs:
         if: ${{ matrix.goarch == "" }}
         run: |
           go test -v -race -cover ./...
-      - name: Run tests
+      - name: Run tests (386)
         # 386 archs don't support race detector
         if: ${{ matrix.goarch == "386" }}
         run: |
