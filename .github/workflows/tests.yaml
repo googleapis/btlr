@@ -38,7 +38,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
       - name: Run tests
-        if: ${{ matrix.goarch == "" }}
+        if: ${{ matrix.goarch == '' }}
         run: |
           go test -v -race -cover ./...
       - name: Run tests (386)
