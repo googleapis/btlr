@@ -57,7 +57,7 @@ func TestRun(t *testing.T) {
 		rmCmd = "rm"
 	}
 
-	output, _ := ExecCmd(rootCmd, "run", filepath.Join(dir, "**", "*.txt"), rmCmd, "foo.txt")
+	output, _ := ExecCmd(NewCommand(), "run", filepath.Join(dir, "**", "*.txt"), rmCmd, "foo.txt")
 	outcomes := []struct {
 		contains string
 		want     bool
@@ -106,7 +106,7 @@ func TestMultiTest(t *testing.T) {
 		rmCmd = "rm"
 	}
 
-	output, _ := ExecCmd(rootCmd, "run", filepath.Join(dir, "foo", ""), filepath.Join(dir, "bar", ""), "--", rmCmd, "foo.txt")
+	output, _ := ExecCmd(NewCommand(), "run", filepath.Join(dir, "foo", ""), filepath.Join(dir, "bar", ""), "--", rmCmd, "foo.txt")
 	outcomes := []struct {
 		contains string
 		want     bool
@@ -167,7 +167,7 @@ func TestGitDiff(t *testing.T) {
 		rmCmd = "rm"
 	}
 
-	output, err := ExecCmd(rootCmd, "run", "--git-diff=main .", filepath.Join(dir, "**", "*.txt"), rmCmd, "bar.txt")
+	output, err := ExecCmd(NewCommand(), "run", "--git-diff=main .", filepath.Join(dir, "**", "*.txt"), rmCmd, "bar.txt")
 	if err != nil {
 		t.Errorf("btlr run failed: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestMaxCmdDur(t *testing.T) {
 		sleepCmd = "sleep 2"
 	}
 
-	output, err := ExecCmd(rootCmd, "run", "--max-cmd-duration=1s", filepath.Join(dir, "**", "*.txt"), sleepCmd)
+	output, err := ExecCmd(NewCommand(), "run", "--max-cmd-duration=1s", filepath.Join(dir, "**", "*.txt"), sleepCmd)
 	if err != nil {
 		var eErr *exitError
 		if !errors.As(err, &eErr) || eErr.Code != 2 {
