@@ -30,13 +30,14 @@ var (
 	cfgFile string
 )
 
+// NewCommand returns a Command object representing an invocation of the btlr.
 func NewCommand() *cobra.Command {
 	cobra.OnInitialize(initConfig)
 
 	c := &cobra.Command{
 		Use:   "btlr",
 		Short: "btlr is a cli to make it easy to execute commands reproducibly.",
-		Long:  `btlr is a cli to make it easy to execute commands reproducibly.`,
+		Long:  "btlr is a cli to make it easy to execute commands reproducibly.",
 	}
 
 	c.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.btlr.yaml)")
