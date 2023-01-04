@@ -149,14 +149,23 @@ func TestGitDiff(t *testing.T) {
 
 	// Create some git changes to diff against
 	args := [][]string{
-		{"init"}, {"add", "foo"}, {"commit", "-m", "test commit"}, {"add", "bar"},
+		{"init", "--initial-branch=main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "tests"},
+		{"add", "foo"},
+		{"commit", "-m", "test commit"},
+		{"add", "bar"},
 	}
 	for _, a := range args {
 		c := exec.Command("git", a...)
 		c.Dir = dir
+		var buf bytes.Buffer
+		c.Stdout, c.Stderr = &buf, &buf
 		if err := c.Run(); err != nil {
-			t.Fatalf("Failed to set up git in test fir: %v", err)
+			t.Log(buf.String())
+			t.Fatalf("Failed to set up git in test dir: %v", err)
 		}
+		t.Log(buf.String())
 	}
 
 	var rmCmd string

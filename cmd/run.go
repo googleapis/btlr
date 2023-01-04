@@ -129,12 +129,12 @@ func runRun(cmd *cobra.Command, args []string, cfg *runCfg) error {
 		if err != nil {
 			return exitWithCode(MisuseExitCode, err)
 		}
-		results := startInDirs(ctx, cfg.maxConcurrency, append([]string{"git", "diff", "--exit-code"}, args...), dirs, cfg.maxCmdDur)
+		operations := startInDirs(ctx, cfg.maxConcurrency, append([]string{"git", "diff", "--exit-code"}, args...), dirs, cfg.maxCmdDur)
 		// Wait for runs to complete, updating the user periodically
 		for range time.Tick(100 * time.Millisecond) {
 			ct := 0
-			for _, r := range results {
-				if r.Done() {
+			for _, op := range operations {
+				if op.Done() {
 					ct++
 				}
 			}
@@ -148,22 +148,23 @@ func runRun(cmd *cobra.Command, args []string, cfg *runCfg) error {
 		cmd.Println()
 		// reduce to only directories with changes
 		dirs = make([]string, 0, len(dirs))
-		for _, r := range results {
+		for _, op := range operations {
 			// git diff returns a non-zero exit code if changes are found
-			if r.Status != Success {
-				dirs = append(dirs, r.Dir)
+			res := op.Result()
+			if res.Status != Success {
+				dirs = append(dirs, op.Dir)
 			}
 		}
 	}
 
 	statusFmt := "Running command(s)... [%d of %d complete]."
 	cmd.Printf(statusFmt, 0, len(dirs))
-	results := startInDirs(ctx, cfg.maxConcurrency, execCmd, dirs, cfg.maxCmdDur)
+	operations := startInDirs(ctx, cfg.maxConcurrency, execCmd, dirs, cfg.maxCmdDur)
 
 	// Wait for runs to complete, outputing the results as they finish
 	updateTick := time.NewTicker(100 * time.Millisecond)
-	for i := range results {
-		cmd.Printf("\n"+"#\n"+"# %s\n"+"#\n"+"\n", results[i].Dir)
+	for i := range operations {
+		cmd.Printf("\n"+"#\n"+"# %s\n"+"#\n"+"\n", operations[i].Dir)
 
 		// Wait for the result to finish, or update the user on the status while waiting
 		for {
@@ -173,17 +174,17 @@ func runRun(cmd *cobra.Command, args []string, cfg *runCfg) error {
 					cmd.Printf("\r"+statusFmt, i, len(dirs))
 				}
 				continue
-			case <-results[i].done:
+			case <-operations[i].done:
 			}
 			break
 		}
-		r := results[i]
-		if r.Status == Skipped {
+		res := operations[i].Result()
+		if res.Status == Skipped {
 			continue
 		}
-		cmd.Println(r.Stdall.String())
-		if r.Err != nil {
-			cmd.Printf("\nerr: %v\n", r.Err)
+		cmd.Println(res.Stdall.String())
+		if res.Err != nil {
+			cmd.Printf("\nerr: %v\n", res.Err)
 		}
 		cmd.Println()
 	}
@@ -191,23 +192,23 @@ func runRun(cmd *cobra.Command, args []string, cfg *runCfg) error {
 	// Summarize runs in one place for users
 	cmd.Printf("\n" + "#\n" + "# Summary \n" + "#\n" + "\n")
 	ct := map[StatusType]int{}
-	for _, r := range results {
-		ct[r.Status]++
+	for _, op := range operations {
+		ct[op.Result().Status]++
 	}
 	for _, s := range []StatusType{Success, Failure, Skipped, Error} {
 		cmd.Printf("%s: %d, ", s, ct[s])
 	}
 	cmd.Println("\b\b")
 	// For each test, print 80 char wide line in fmt: "path/to/dir....[ STATUS]"
-	for _, r := range results {
-		if r.Status == Skipped {
+	for _, r := range operations {
+		if r.Result().Status == Skipped {
 			continue
 		}
 		d := r.Dir
 		if len(d) > 67 { // Truncate the directory if it's too wide
 			d = d[:67]
 		}
-		cmd.Printf("%s%s[%8v]\n", d, strings.Repeat(".", 70-len(d)), r.Status)
+		cmd.Printf("%s%s[%8v]\n", d, strings.Repeat(".", 70-len(d)), r.Result().Status)
 	}
 
 	if ct[Failure] > 0 || ct[Error] > 0 {
@@ -220,75 +221,95 @@ func runRun(cmd *cobra.Command, args []string, cfg *runCfg) error {
 }
 
 // startInDirs starts a command running in multiple directories.
-func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []string, maxDur time.Duration) []runResult {
-	results, q := make([]runResult, len(dirs)), make(chan *runResult, len(dirs))
+func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []string, maxDur time.Duration) []*runOperation {
+	operations, q := make([]*runOperation, len(dirs)), make(chan *runOperation, len(dirs))
 	defer close(q)
+	for i, d := range dirs {
+		operations[i] = newRunOperation(d, execCmd)
+		q <- operations[i]
+	}
+
 	// Spin up workers to run the commands in each directory
 	for i := 0; i < maxThreads; i++ {
 		go func() {
-			for r := range q {
-				runInDir(ctx, execCmd, r, maxDur)
+			for op := range q {
+				opCtx := ctx
+				if maxDur != 0 {
+					var cancel context.CancelFunc
+					opCtx, cancel = context.WithTimeout(ctx, maxDur)
+					defer cancel()
+				}
+				op.Execute(opCtx)
 			}
 		}()
 	}
-	// Queue up each directory to be run
-	for i, d := range dirs {
-		results[i].Dir = d
-		results[i].done = make(chan bool)
-		q <- &results[i]
-	}
-	return results
+
+	return operations
 }
 
-// runInDir executes the specified commands, reporting results to the provided runResult.
-func runInDir(ctx context.Context, execCmd []string, r *runResult, maxDur time.Duration) {
-	defer close(r.done)
-	// set a timeout if neccesary
-	if maxDur != 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, maxDur)
-		defer cancel()
+func newRunOperation(dir string, cmd []string) *runOperation {
+	return &runOperation{
+		Dir:  dir,
+		Cmd:  cmd,
+		done: make(chan struct{}),
 	}
+}
+
+type runOperation struct {
+	Dir string
+	Cmd []string
+
+	done chan struct{} // closed once the cmd is completed
+	res  runResult
+}
+
+// Execute runs the operation. Not threadsafe.
+func (r *runOperation) Execute(ctx context.Context) {
+	defer close(r.done)
 	// Run the main cmd
-	cmd := exec.CommandContext(ctx, execCmd[0], execCmd[1:]...)
+	cmd := exec.CommandContext(ctx, r.Cmd[0], r.Cmd[1:]...)
 	cmd.Dir = r.Dir
-	cmd.Stdout, cmd.Stderr = io.MultiWriter(&r.Stdout, &r.Stdall), io.MultiWriter(&r.Stderr, &r.Stdall)
-	r.Err = cmd.Run()
-	if _, ok := r.Err.(*exec.ExitError); r.Err != nil && !ok {
-		r.Status = Error // If it's not an exit error, the command failed to run
+	cmd.Stdout, cmd.Stderr = io.MultiWriter(&r.res.Stdout, &r.res.Stdall), io.MultiWriter(&r.res.Stderr, &r.res.Stdall)
+	r.res.Err = cmd.Run()
+	if _, ok := r.res.Err.(*exec.ExitError); r.res.Err != nil && !ok {
+		r.res.Status = Error // If it's not an exit error, the command failed to run
 		// A canceled context means that a sigint or sigterm was received
-		if r.Err == context.Canceled {
-			r.Err = errors.New("interupted before complete (sigint or sigterm)")
+		if r.res.Err == context.Canceled {
+			r.res.Err = errors.New("interupted before complete (sigint or sigterm)")
 		}
-		r.Err = fmt.Errorf("failed to run cmd (%s): %w", strings.Join(cmd.Args, " "), r.Err)
+		r.res.Err = fmt.Errorf("failed to run cmd (%s): %w", strings.Join(cmd.Args, " "), r.res.Err)
 		return
 	}
 	if cmd.ProcessState.Success() {
-		r.Status = Success
+		r.res.Status = Success
 	} else {
-		r.Status = Failure
+		r.res.Status = Failure
 	}
 }
 
-// runResult represents a running command in a specific directory.
-type runResult struct {
-	Dir    string
-	Stdout bytes.Buffer
-	Stderr bytes.Buffer
-	Stdall bytes.Buffer
-	Status StatusType
-	Err    error     // err return by cmd
-	done   chan bool // closed once the cmd is completed
-}
-
-// Done returns if the command is no longer running.
-func (r *runResult) Done() bool {
+// Done returns if the operation is no longer running.
+func (r *runOperation) Done() bool {
 	select {
 	case <-r.done:
 		return true
 	default:
 	}
 	return false
+}
+
+// Result returns results of the operation.
+func (r *runOperation) Result() runResult {
+	<-r.done
+	return r.res
+}
+
+// runResult represents a running command in a specific directory.
+type runResult struct {
+	Stdout bytes.Buffer
+	Stderr bytes.Buffer
+	Stdall bytes.Buffer
+	Status StatusType
+	Err    error // err return by cmd
 }
 
 type StatusType string
