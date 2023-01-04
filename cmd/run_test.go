@@ -152,10 +152,11 @@ func TestGitDiff(t *testing.T) {
 		{"init"},
 		{"config", "user.email", "test@example.com"},
 		{"config", "user.name", "tests"},
-		{"add", "foo"}, {"commit", "-m", "test commit"}, {"add", "bar"},
+		{"add", "foo"}, 
+		{"commit", "-m", "test commit"}, 
+		{"add", "bar"},
 	}
 	for _, a := range args {
-
 		c := exec.Command("git", a...)
 		c.Dir = dir
 		var buf bytes.Buffer
@@ -164,6 +165,7 @@ func TestGitDiff(t *testing.T) {
 			t.Log(buf.String())
 			t.Fatalf("Failed to set up git in test dir: %v", err)
 		}
+		t.Log(buf.String())
 	}
 
 	var rmCmd string
