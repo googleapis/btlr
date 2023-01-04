@@ -149,11 +149,11 @@ func TestGitDiff(t *testing.T) {
 
 	// Create some git changes to diff against
 	args := [][]string{
-		{"init"},
+		{"init", "--initial-branch=main"},
 		{"config", "user.email", "test@example.com"},
 		{"config", "user.name", "tests"},
-		{"add", "foo"}, 
-		{"commit", "-m", "test commit"}, 
+		{"add", "foo"},
+		{"commit", "-m", "test commit"},
 		{"add", "bar"},
 	}
 	for _, a := range args {
