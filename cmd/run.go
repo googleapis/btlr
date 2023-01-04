@@ -225,7 +225,7 @@ func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []s
 	operations, q := make([]*runOperation, len(dirs)), make(chan *runOperation, len(dirs))
 	defer close(q)
 	for i, d := range dirs {
-		operations[i] = NewRunOperation(d, execCmd)
+		operations[i] = newRunOperation(d, execCmd)
 		q <- operations[i]
 	}
 
@@ -247,7 +247,7 @@ func startInDirs(ctx context.Context, maxThreads int, execCmd []string, dirs []s
 	return operations
 }
 
-func NewRunOperation(dir string, cmd []string) *runOperation {
+func newRunOperation(dir string, cmd []string) *runOperation {
 	return &runOperation{
 		Dir:  dir,
 		Cmd:  cmd,
