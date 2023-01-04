@@ -267,6 +267,10 @@ type runOperation struct {
 func (r *runOperation) Execute(ctx context.Context) {
 	defer close(r.done)
 	// Run the main cmd
+	if runtime.GOOS == "windows" {
+		// on windows, any command needs to be passed to the cmd executable
+		r.Cmd = append([]string{"cmd.exe", "/C"}, r.Cmd...)
+	}
 	cmd := exec.CommandContext(ctx, r.Cmd[0], r.Cmd[1:]...)
 	cmd.Dir = r.Dir
 	cmd.Stdout, cmd.Stderr = io.MultiWriter(&r.res.Stdout, &r.res.Stdall), io.MultiWriter(&r.res.Stderr, &r.res.Stdall)
