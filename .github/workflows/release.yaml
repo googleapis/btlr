@@ -21,18 +21,25 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      releases_created: steps.release-please.outputs.releases_created
-      release_tag: steps.release-please.outputs.tag_name
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      release_tag: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: google-github-actions/release-please-action@v3
+        id: release
         with:
           package-name: btlr
           release-type: simple
           version-file: 'cmd/version.txt'
           bump-patch-for-minor-pre-major: true
+  debug-output:
+      needs: release-please
+      runs-on: ubuntu-latest
+      steps:
+        - name: debug-output
+          run: echo '${{ toJSON(needs.release-please.outputs) }}'
   releases:
       needs: release-please
-      if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+      if: ${{ needs.release-please.outputs.releases_created }}
       runs-on: ubuntu-latest
       strategy:
         matrix:
