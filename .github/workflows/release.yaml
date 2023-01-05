@@ -29,9 +29,10 @@ jobs:
           package-name: btlr
           release-type: simple
           version-file: 'cmd/version.txt'
+          bump-patch-for-minor-pre-major: true
   releases:
       needs: release-please
-      if: ${{ needs.release-please.outputs.releases_created }}
+      if: ${{ needs.release-please.outputs.releases_created == 'true' }}
       runs-on: ubuntu-latest
       strategy:
         matrix:
