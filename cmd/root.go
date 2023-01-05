@@ -15,8 +15,11 @@
 package cmd
 
 import (
+	_ "embed"
 	"log"
 	"os"
+	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -28,16 +31,25 @@ var (
 	stdin  = os.Stdin
 
 	cfgFile string
+
+	// versionString indicates the version of this library.
+	//go:embed version.txt
+	versionString string
 )
+
+func init() {
+	versionString = strings.TrimSpace(versionString) + "." + runtime.GOOS + "." + runtime.GOARCH
+}
 
 // NewCommand returns a Command object representing an invocation of the btlr.
 func NewCommand() *cobra.Command {
 	cobra.OnInitialize(initConfig)
 
 	c := &cobra.Command{
-		Use:   "btlr",
-		Short: "btlr is a cli to make it easy to execute commands reproducibly.",
-		Long:  "btlr is a cli to make it easy to execute commands reproducibly.",
+		Use:     "btlr",
+		Short:   "btlr is a cli to make it easy to execute commands reproducibly.",
+		Long:    "btlr is a cli to make it easy to execute commands reproducibly.",
+		Version: versionString,
 	}
 
 	c.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.btlr.yaml)")
