@@ -26,9 +26,9 @@ jobs:
     steps:
       - uses: google-github-actions/release-please-action@v3
         with:
-          packageName: btlr
-          releaseType: simple
-          versionFile: 'cmd/version.txt'
+          package-name: btlr
+          release-type: simple
+          version-file: 'cmd/version.txt'
   releases:
       needs: release-please
       if: ${{ needs.release-please.outputs.releases_created }}
