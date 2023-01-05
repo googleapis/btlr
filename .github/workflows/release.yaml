@@ -30,6 +30,12 @@ jobs:
           release-type: simple
           version-file: 'cmd/version.txt'
           bump-patch-for-minor-pre-major: true
+  debug-output:
+      needs: release-please
+      runs-on: ubuntu-latest
+      steps:
+        - name: debug-output
+          run: echo '${{ toJSON(needs.release-please.outputs) }}'
   releases:
       needs: release-please
       if: ${{ needs.release-please.outputs.releases_created == 'true' }}
@@ -43,8 +49,6 @@ jobs:
             - goarch: "386"
               goos: darwin
       steps:
-        - name: debug-output
-          run: echo '${{ toJSON(needs.release-please.outputs) }}'
         - uses: actions/checkout@v3
         - uses: wangyoucao577/go-release-action@v1.34
           with:
