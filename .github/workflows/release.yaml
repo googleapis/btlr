@@ -21,11 +21,11 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      releases_created: ${{ steps.release-please.outputs.releases_created }}
-      release_tag: ${{ steps.release-please.outputs.tag_name }}
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      release_tag: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: google-github-actions/release-please-action@v3
-        id: release-please
+        id: release
         with:
           package-name: btlr
           release-type: simple
