@@ -26,7 +26,6 @@ jobs:
     steps:
       - uses: google-github-actions/release-please-action@v3
         with:
-          release-type: simple
           packageName: btlr
           releaseType: simple
           versionFile: 'cmd/version.txt'
@@ -50,5 +49,3 @@ jobs:
             goos: ${{ matrix.goos }}
             goarch: ${{ matrix.goarch }}
             github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      
