@@ -27,7 +27,7 @@ jobs:
       - name: Install goimports
         run: go install golang.org/x/tools/cmd/goimports@latest
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4
       - run: goimports -w .
       - run: go mod tidy
       - name: Verify no changes from goimports and go mod tidy. If you're reading this and the check has failed, run `goimports -w . && go mod tidy`.
